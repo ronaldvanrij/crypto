@@ -539,15 +539,15 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 	case 1: // Name
 		var rdn pkix.RDNSequence
 		if rest, err := asn1.Unmarshal(rawResponderID.Bytes, &rdn); err != nil || len(rest) != 0 {
-			return nil, ParseError("invalid responder name")
+			return ret, ParseError("invalid responder name")
 		}
 		ret.RawResponderName = rawResponderID.Bytes
 	case 2: // KeyHash
 		if rest, err := asn1.Unmarshal(rawResponderID.Bytes, &ret.ResponderKeyHash); err != nil || len(rest) != 0 {
-			return nil, ParseError("invalid responder key hash")
+			return ret, ParseError("invalid responder key hash")
 		}
 	default:
-		return nil, ParseError("invalid responder id tag")
+		return ret, ParseError("invalid responder id tag")
 	}
 
 	if len(basicResp.Certificates) > 0 {
@@ -560,27 +560,27 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		// [1] https://github.com/golang/go/issues/21527
 		ret.Certificate, err = x509.ParseCertificate(basicResp.Certificates[0].FullBytes)
 		if err != nil {
-			return nil, err
+			return ret, err
 		}
 
 		if err := ret.CheckSignatureFrom(ret.Certificate); err != nil {
-			return nil, ParseError("bad signature on embedded certificate: " + err.Error())
+			return ret, ParseError("bad signature on embedded certificate: " + err.Error())
 		}
 
 		if issuer != nil {
 			if err := issuer.CheckSignature(ret.Certificate.SignatureAlgorithm, ret.Certificate.RawTBSCertificate, ret.Certificate.Signature); err != nil {
-				return nil, ParseError("bad OCSP signature: " + err.Error())
+				return ret, ParseError("bad OCSP signature of received certificate: " + err.Error())
 			}
 		}
 	} else if issuer != nil {
 		if err := ret.CheckSignatureFrom(issuer); err != nil {
-			return nil, ParseError("bad OCSP signature: " + err.Error())
+			return ret, ParseError("bad OCSP signature of issuer: " + err.Error())
 		}
 	}
 
 	for _, ext := range singleResp.SingleExtensions {
 		if ext.Critical {
-			return nil, ParseError("unsupported critical extension")
+			return ret, ParseError(fmt.Sprintf("unsupported critical extension %s", ext.Id.String()))
 		}
 	}
 
@@ -591,7 +591,7 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		}
 	}
 	if ret.IssuerHash == 0 {
-		return nil, ParseError("unsupported issuer hash algorithm")
+		return ret, ParseError("unsupported issuer hash algorithm")
 	}
 
 	switch {

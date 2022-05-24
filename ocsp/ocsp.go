@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -416,6 +417,26 @@ func (p ParseError) Error() string {
 	return string(p)
 }
 
+type CompoundParseError struct {
+	errors []error
+}
+
+func (p CompoundParseError) Error() string {
+	var str []string
+	for _, e := range p.errors {
+		str = append(str, e.Error())
+	}
+	return strings.Join(str, ",")
+}
+
+func (p *CompoundParseError) Add(err error) {
+	p.errors = append(p.errors, err)
+}
+
+func (p *CompoundParseError) IsEmpty() bool {
+	return len(p.errors) == 0
+}
+
 // ParseRequest parses an OCSP request in DER form. It only supports
 // requests for a single certificate. Signed requests are not supported.
 // If a request includes a signature, it will result in a ParseError.
@@ -531,6 +552,9 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		NextUpdate:         singleResp.NextUpdate,
 	}
 
+	// From this point onwards, errors are recoverable
+	var compoundError CompoundParseError
+
 	// Handle the ResponderID CHOICE tag. ResponderID can be flattened into
 	// TBSResponseData once https://go-review.googlesource.com/34503 has been
 	// released.
@@ -539,15 +563,16 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 	case 1: // Name
 		var rdn pkix.RDNSequence
 		if rest, err := asn1.Unmarshal(rawResponderID.Bytes, &rdn); err != nil || len(rest) != 0 {
-			return ret, ParseError("invalid responder name")
+			compoundError.Add(ParseError("invalid responder name"))
+		} else {
+			ret.RawResponderName = rawResponderID.Bytes
 		}
-		ret.RawResponderName = rawResponderID.Bytes
 	case 2: // KeyHash
 		if rest, err := asn1.Unmarshal(rawResponderID.Bytes, &ret.ResponderKeyHash); err != nil || len(rest) != 0 {
-			return ret, ParseError("invalid responder key hash")
+			compoundError.Add(ParseError("invalid responder key hash"))
 		}
 	default:
-		return ret, ParseError("invalid responder id tag")
+		compoundError.Add(ParseError("invalid responder id tag"))
 	}
 
 	if len(basicResp.Certificates) > 0 {
@@ -560,27 +585,27 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		// [1] https://github.com/golang/go/issues/21527
 		ret.Certificate, err = x509.ParseCertificate(basicResp.Certificates[0].FullBytes)
 		if err != nil {
-			return ret, err
-		}
+			compoundError.Add(err)
+		} else {
+			if err := ret.CheckSignatureFrom(ret.Certificate); err != nil {
+				compoundError.Add(ParseError("bad signature on embedded certificate: " + err.Error()))
+			}
 
-		if err := ret.CheckSignatureFrom(ret.Certificate); err != nil {
-			return ret, ParseError("bad signature on embedded certificate: " + err.Error())
-		}
-
-		if issuer != nil {
-			if err := issuer.CheckSignature(ret.Certificate.SignatureAlgorithm, ret.Certificate.RawTBSCertificate, ret.Certificate.Signature); err != nil {
-				return ret, ParseError("bad OCSP signature of received certificate: " + err.Error())
+			if issuer != nil {
+				if err := issuer.CheckSignature(ret.Certificate.SignatureAlgorithm, ret.Certificate.RawTBSCertificate, ret.Certificate.Signature); err != nil {
+					compoundError.Add(ParseError("bad OCSP signature of received certificate: " + err.Error()))
+				}
 			}
 		}
 	} else if issuer != nil {
 		if err := ret.CheckSignatureFrom(issuer); err != nil {
-			return ret, ParseError("bad OCSP signature of issuer: " + err.Error())
+			compoundError.Add(ParseError("bad OCSP signature of issuer: " + err.Error()))
 		}
 	}
 
 	for _, ext := range singleResp.SingleExtensions {
 		if ext.Critical {
-			return ret, ParseError(fmt.Sprintf("unsupported critical extension %s", ext.Id.String()))
+			compoundError.Add(ParseError(fmt.Sprintf("unsupported critical extension %s", ext.Id.String())))
 		}
 	}
 
@@ -591,7 +616,7 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		}
 	}
 	if ret.IssuerHash == 0 {
-		return ret, ParseError("unsupported issuer hash algorithm")
+		compoundError.Add(ParseError("unsupported issuer hash algorithm"))
 	}
 
 	switch {
@@ -605,7 +630,10 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		ret.RevocationReason = int(singleResp.Revoked.Reason)
 	}
 
-	return ret, nil
+	if compoundError.IsEmpty() {
+		return ret, nil
+	}
+	return ret, compoundError
 }
 
 // RequestOptions contains options for constructing OCSP requests.

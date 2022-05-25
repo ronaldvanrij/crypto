@@ -417,11 +417,12 @@ func (p ParseError) Error() string {
 	return string(p)
 }
 
-type CompoundParseError struct {
+// CompoundError combines several unrelated errors into a convenient package. This is different than wrapping errors.
+type CompoundError struct {
 	errors []error
 }
 
-func (p CompoundParseError) Error() string {
+func (p CompoundError) Error() string {
 	var str []string
 	for _, e := range p.errors {
 		str = append(str, e.Error())
@@ -429,12 +430,19 @@ func (p CompoundParseError) Error() string {
 	return strings.Join(str, ",")
 }
 
-func (p *CompoundParseError) Add(err error) {
+func (p *CompoundError) Add(err error) {
 	p.errors = append(p.errors, err)
 }
 
-func (p *CompoundParseError) IsEmpty() bool {
+func (p *CompoundError) IsEmpty() bool {
 	return len(p.errors) == 0
+}
+
+// VerificationError results from parsable OCSP responses, but verification failed.
+type VerificationError string
+
+func (p VerificationError) Error() string {
+	return string(p)
 }
 
 // ParseRequest parses an OCSP request in DER form. It only supports
@@ -553,7 +561,7 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 	}
 
 	// From this point onwards, errors are recoverable
-	var compoundError CompoundParseError
+	var compoundError CompoundError
 
 	// Handle the ResponderID CHOICE tag. ResponderID can be flattened into
 	// TBSResponseData once https://go-review.googlesource.com/34503 has been
@@ -588,18 +596,18 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 			compoundError.Add(err)
 		} else {
 			if err := ret.CheckSignatureFrom(ret.Certificate); err != nil {
-				compoundError.Add(ParseError("bad signature on embedded certificate: " + err.Error()))
+				compoundError.Add(VerificationError("bad signature on embedded certificate: " + err.Error()))
 			}
 
 			if issuer != nil {
 				if err := issuer.CheckSignature(ret.Certificate.SignatureAlgorithm, ret.Certificate.RawTBSCertificate, ret.Certificate.Signature); err != nil {
-					compoundError.Add(ParseError("bad OCSP signature of received certificate: " + err.Error()))
+					compoundError.Add(VerificationError("bad OCSP signature of received certificate: " + err.Error()))
 				}
 			}
 		}
 	} else if issuer != nil {
 		if err := ret.CheckSignatureFrom(issuer); err != nil {
-			compoundError.Add(ParseError("bad OCSP signature of issuer: " + err.Error()))
+			compoundError.Add(VerificationError("bad OCSP signature of issuer: " + err.Error()))
 		}
 	}
 

@@ -419,23 +419,23 @@ func (p ParseError) Error() string {
 
 // CompoundError combines several unrelated errors into a convenient package. This is different than wrapping errors.
 type CompoundError struct {
-	errors []error
+	Errors []error
 }
 
 func (p CompoundError) Error() string {
 	var str []string
-	for _, e := range p.errors {
+	for _, e := range p.Errors {
 		str = append(str, e.Error())
 	}
 	return strings.Join(str, ",")
 }
 
 func (p *CompoundError) Add(err error) {
-	p.errors = append(p.errors, err)
+	p.Errors = append(p.Errors, err)
 }
 
 func (p *CompoundError) IsEmpty() bool {
-	return len(p.errors) == 0
+	return len(p.Errors) == 0
 }
 
 // VerificationError results from parsable OCSP responses, but verification failed.
@@ -560,7 +560,7 @@ func ParseResponseForCert(bytes []byte, cert, issuer *x509.Certificate) (*Respon
 		NextUpdate:         singleResp.NextUpdate,
 	}
 
-	// From this point onwards, errors are recoverable
+	// From this point onwards, Errors are recoverable
 	var compoundError CompoundError
 
 	// Handle the ResponderID CHOICE tag. ResponderID can be flattened into
